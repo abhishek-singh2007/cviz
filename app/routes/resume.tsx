@@ -1,56 +1,42 @@
-import {Link, useNavigate, useParams} from "react-router";
-import {useEffect, useState} from "react";
-import {usePuterStore} from "~/lib/puter";
+import { Link, useNavigate, useParams } from "react-router";
+import { useEffect, useState } from "react";
 import Summary from "~/components/Summary";
 import ATS from "~/components/ATS";
 import Details from "~/components/Details";
+import { useFirebaseAuthStore } from "~/lib/firebase-auth";
+import { getAnalysisRecord, type AnalysisRecord } from "~/lib/analysis-session";
 
-export const meta = () => ([
-    { title: 'Resumind | Review ' },
-    { name: 'description', content: 'Detailed overview of your resume' },
-])
+export const meta = () => [
+    { title: "Resumind | Review" },
+    { name: "description", content: "Detailed overview of your resume" },
+];
 
 const Resume = () => {
-    const { auth, isLoading, fs, kv } = usePuterStore();
+    const { user, initialized, isLoading: authLoading } = useFirebaseAuthStore();
     const { id } = useParams();
-    const [imageUrl, setImageUrl] = useState('');
-    const [resumeUrl, setResumeUrl] = useState('');
-    const [feedback, setFeedback] = useState<Feedback | null>(null);
     const navigate = useNavigate();
 
-    useEffect(() => {
-        if(!isLoading && !auth.isAuthenticated) navigate(`/auth?next=/resume/${id}`);
-    }, [isLoading])
+    const [record, setRecord] = useState<AnalysisRecord | null>(null);
+    const [loadError, setLoadError] = useState("");
 
     useEffect(() => {
-        const loadResume = async () => {
-            const resume = await kv.get(`resume:${id}`);
+        if (!id) return;
+        if (initialized && !authLoading && !user) {
+            navigate(`/sign-in?next=/resume/${id}`);
+        }
+    }, [authLoading, id, initialized, navigate, user]);
 
-            if(!resume) return;
+    useEffect(() => {
+        if (!id || !user) return;
 
-            const data = JSON.parse(resume);
-
-            const resumeBlob = await fs.read(data.resumePath);
-            if(!resumeBlob) return;
-
-            const pdfBlob = new Blob([resumeBlob], { type: 'application/pdf' });
-            const resumeUrl = URL.createObjectURL(pdfBlob);
-            setResumeUrl(resumeUrl);
-
-            if (data.imagePath) {
-                const imageBlob = await fs.read(data.imagePath);
-                if (imageBlob) {
-                    const imageUrl = URL.createObjectURL(imageBlob);
-                    setImageUrl(imageUrl);
-                }
-            }
-
-            setFeedback(data.feedback);
-            console.log({resumeUrl, imageUrl, feedback: data.feedback });
+        const analysisRecord = getAnalysisRecord(id);
+        if (!analysisRecord) {
+            setLoadError("No analysis data found. Please analyze your resume again.");
+            return;
         }
 
-        loadResume();
-    }, [id]);
+        setRecord(analysisRecord);
+    }, [id, user]);
 
     return (
         <main className="!pt-0">
@@ -60,40 +46,45 @@ const Resume = () => {
                     <span className="text-gray-800 text-sm font-semibold">Back to Homepage</span>
                 </Link>
             </nav>
-            <div className="flex flex-row w-full max-lg:flex-col-reverse">
+
+            <div className="flex flex-row w-full max-lg:flex-col">
                 <section className="feedback-section bg-[url('/images/bg-small.svg')] bg-cover h-[100vh] sticky top-0 items-center justify-center">
-                    {resumeUrl && (
-                        <div className="animate-in fade-in duration-1000 gradient-border max-sm:m-0 h-[90%] max-wxl:h-fit w-fit">
-                            <a href={resumeUrl} target="_blank" rel="noopener noreferrer">
-                                {imageUrl ? (
-                                    <img
-                                        src={imageUrl}
-                                        className="w-full h-full object-contain rounded-2xl"
-                                        title="resume"
-                                    />
-                                ) : (
-                                    <div className="w-full h-full min-h-[320px] flex items-center justify-center rounded-2xl bg-white/80 px-6 text-center text-gray-600">
-                                        Preview image unavailable, but analysis is ready.
-                                    </div>
-                                )}
-                            </a>
+                    <div className="gradient-border w-full max-w-[520px]">
+                        <div className="bg-white/90 rounded-2xl p-6 flex flex-col gap-4">
+                            <h3 className="text-2xl font-semibold text-black">Analysis Summary</h3>
+                            <p className="text-gray-700">
+                                {record?.resumeName || "Resume"}
+                            </p>
+                            <p className="text-gray-500 text-sm">
+                                {record?.jobTitle ? `Target Role: ${record.jobTitle}` : "General ATS check"}
+                            </p>
+                            {record?.companyName && (
+                                <p className="text-gray-500 text-sm">Company: {record.companyName}</p>
+                            )}
                         </div>
-                    )}
+                    </div>
                 </section>
+
                 <section className="feedback-section">
                     <h2 className="text-4xl !text-black font-bold">Resume Review</h2>
-                    {feedback ? (
+                    {!!loadError && <p className="text-red-600 text-base mt-3">{loadError}</p>}
+
+                    {record?.feedback ? (
                         <div className="flex flex-col gap-8 animate-in fade-in duration-1000">
-                            <Summary feedback={feedback} />
-                            <ATS score={feedback.ATS.score || 0} suggestions={feedback.ATS.tips || []} />
-                            <Details feedback={feedback} />
+                            <Summary feedback={record.feedback} />
+                            <ATS
+                                score={record.feedback.ATS.score || 0}
+                                suggestions={record.feedback.ATS.tips || []}
+                            />
+                            <Details feedback={record.feedback} />
                         </div>
-                    ) : (
+                    ) : !loadError ? (
                         <img src="/images/resume-scan-2.gif" className="w-full" />
-                    )}
+                    ) : null}
                 </section>
             </div>
         </main>
-    )
-}
-export default Resume
+    );
+};
+
+export default Resume;

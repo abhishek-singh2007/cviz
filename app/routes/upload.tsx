@@ -1,145 +1,88 @@
-import {type FormEvent, useState} from 'react'
+import type { FormEvent } from "react";
+import { useEffect, useState } from "react";
+import { useNavigate } from "react-router";
 import Navbar from "~/components/Navbar";
 import FileUploader from "~/components/FileUploader";
-import {usePuterStore} from "~/lib/puter";
-import {useNavigate} from "react-router";
-import {useEffect} from "react";
-import {convertPdfToImage} from "~/lib/pdf2img";
-import {generateUUID} from "~/lib/utils";
-import {prepareInstructions} from "../../constants";
-
-const extractJsonText = (value: string) => {
-    const trimmedValue = value.trim();
-    const fencedMatch = trimmedValue.match(/```(?:json)?\s*([\s\S]*?)```/i);
-
-    if (fencedMatch?.[1]) {
-        return fencedMatch[1].trim();
-    }
-
-    const firstBrace = trimmedValue.indexOf("{");
-    const lastBrace = trimmedValue.lastIndexOf("}");
-
-    if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
-        return trimmedValue.slice(firstBrace, lastBrace + 1);
-    }
-
-    return trimmedValue;
-};
+import { useFirebaseAuthStore } from "~/lib/firebase-auth";
+import { analyzeResumeFree } from "~/lib/ats";
+import { createAnalysisRecord, saveAnalysisRecord } from "~/lib/analysis-session";
 
 const Upload = () => {
-    const { auth, isLoading, error, puterReady, clearError, fs, ai, kv } = usePuterStore();
+    const { user, initialized, isLoading: authLoading } = useFirebaseAuthStore();
     const navigate = useNavigate();
+
     const [isProcessing, setIsProcessing] = useState(false);
-    const [statusText, setStatusText] = useState('');
+    const [statusText, setStatusText] = useState("");
     const [file, setFile] = useState<File | null>(null);
 
     useEffect(() => {
-        if (puterReady && !isLoading && !auth.isAuthenticated) {
-            navigate('/auth?next=/upload');
+        if (initialized && !authLoading && !user) {
+            navigate("/sign-in?next=/upload");
         }
-    }, [auth.isAuthenticated, isLoading, navigate, puterReady]);
+    }, [authLoading, initialized, navigate, user]);
 
-    const handleFileSelect = (file: File | null) => {
-        setFile(file)
-    }
+    const handleFileSelect = (selectedFile: File | null) => {
+        setFile(selectedFile);
+    };
 
-    const handleAnalyze = async ({ companyName, jobTitle, jobDescription, file }: { companyName: string, jobTitle: string, jobDescription: string, file: File  }) => {
-        clearError();
-
-        if (!puterReady) {
-            setStatusText('Puter SDK load nahi hua. Page refresh karo aur dubara try karo.');
-            return;
-        }
-
-        if (!auth.isAuthenticated) {
-            navigate('/auth?next=/upload');
+    const handleAnalyze = async (input: {
+        companyName: string;
+        jobTitle: string;
+        jobDescription: string;
+        file: File;
+    }) => {
+        if (!user) {
+            navigate("/sign-in?next=/upload");
             return;
         }
 
         setIsProcessing(true);
+        setStatusText("Extracting resume text...");
 
         try {
-            setStatusText('Uploading the file...');
-            const uploadedFile = await fs.upload([file]);
-            if(!uploadedFile) {
-                setStatusText('Error: Failed to upload file');
-                return;
-            }
+            const feedback = await analyzeResumeFree({
+                file: input.file,
+                jobTitle: input.jobTitle,
+                jobDescription: input.jobDescription,
+            });
 
-            setStatusText('Converting to image...');
-            const imageFile = await convertPdfToImage(file);
+            setStatusText("Preparing score report...");
 
-            if (!imageFile.file) {
-                setStatusText(imageFile.error || 'PDF preview could not be generated. Continuing analysis...');
-            }
+            const record = createAnalysisRecord({
+                companyName: input.companyName,
+                jobTitle: input.jobTitle,
+                jobDescription: input.jobDescription,
+                resumeName: input.file.name,
+                feedback,
+            });
 
-            let uploadedImagePath = "";
-            if (imageFile.file) {
-                setStatusText('Uploading the image...');
-                const uploadedImage = await fs.upload([imageFile.file]);
-                if(!uploadedImage) {
-                    setStatusText('Image preview upload failed. Continuing analysis without preview...');
-                } else {
-                    uploadedImagePath = uploadedImage.path;
-                }
-            }
-
-            setStatusText('Preparing data...');
-            const uuid = generateUUID();
-            const data = {
-                id: uuid,
-                resumePath: uploadedFile.path,
-                imagePath: uploadedImagePath,
-                companyName, jobTitle, jobDescription,
-                feedback: '',
-            }
-            await kv.set(`resume:${uuid}`, JSON.stringify(data));
-
-            setStatusText('Analyzing...');
-
-            const feedback = await ai.feedback(
-                uploadedFile.path,
-                prepareInstructions({ jobTitle, jobDescription })
-            )
-            if (!feedback) {
-                setStatusText('Error: Failed to analyze resume');
-                return;
-            }
-
-            const feedbackText = typeof feedback.message.content === 'string'
-                ? feedback.message.content
-                : feedback.message.content[0].text;
-
-            data.feedback = JSON.parse(extractJsonText(feedbackText));
-            await kv.set(`resume:${uuid}`, JSON.stringify(data));
-            setStatusText('Analysis complete, redirecting...');
-            console.log(data);
-            navigate(`/resume/${uuid}`);
-        } catch (e) {
-            const message = e instanceof Error ? e.message : (typeof e === 'string' ? e : 'Unknown error while analyzing resume');
+            saveAnalysisRecord(record);
+            navigate(`/resume/${record.id}`);
+        } catch (error) {
+            const message = error instanceof Error ? error.message : "Failed to analyze resume.";
             setStatusText(`Error: ${message}`);
         } finally {
             setIsProcessing(false);
         }
-    }
+    };
 
-    const handleSubmit = (e: FormEvent<HTMLFormElement>) => {
-        e.preventDefault();
-        const form = e.currentTarget.closest('form');
-        if(!form) return;
-        const formData = new FormData(form);
+    const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+        event.preventDefault();
 
-        const companyName = formData.get('company-name') as string;
-        const jobTitle = formData.get('job-title') as string;
-        const jobDescription = formData.get('job-description') as string;
-
-        if(!file) {
-            setStatusText('Please upload a PDF resume first.');
+        if (!file) {
+            setStatusText("Please upload a PDF resume first.");
             return;
         }
 
-        handleAnalyze({ companyName, jobTitle, jobDescription, file });
-    }
+        const form = event.currentTarget;
+        const formData = new FormData(form);
+
+        const companyName = String(formData.get("company-name") || "").trim();
+        const jobTitle = String(formData.get("job-title") || "").trim();
+        const jobDescription = String(formData.get("job-description") || "").trim();
+
+        await handleAnalyze({ companyName, jobTitle, jobDescription, file });
+    };
 
     return (
         <main className="bg-[url('/images/bg-main.svg')] bg-cover">
@@ -150,15 +93,17 @@ const Upload = () => {
                     <h1>Smart feedback for your dream job</h1>
                     {isProcessing ? (
                         <>
-                            <h2>{statusText}</h2>
+                            <h2>{statusText || "Analyzing your resume..."}</h2>
                             <img src="/images/resume-scan.gif" className="w-full" />
                         </>
                     ) : (
-                        <h2>Drop your resume for an ATS score and improvement tips</h2>
+                        <h2>Drop your resume for a free ATS score and practical improvement tips</h2>
                     )}
-                    {!isProcessing && (statusText || error) && (
-                        <p className="text-red-600 text-base">{statusText || error}</p>
+
+                    {!isProcessing && statusText && (
+                        <p className="text-red-600 text-base">{statusText}</p>
                     )}
+
                     {!isProcessing && (
                         <form id="upload-form" onSubmit={handleSubmit} className="flex flex-col gap-4 mt-8">
                             <div className="form-div">
@@ -179,7 +124,7 @@ const Upload = () => {
                                 <FileUploader onFileSelect={handleFileSelect} />
                             </div>
 
-                            <button className="primary-button" type="submit" disabled={isLoading || isProcessing || !puterReady}>
+                            <button className="primary-button" type="submit" disabled={authLoading || isProcessing}>
                                 Analyze Resume
                             </button>
                         </form>
@@ -187,6 +132,7 @@ const Upload = () => {
                 </div>
             </section>
         </main>
-    )
-}
-export default Upload
+    );
+};
+
+export default Upload;
