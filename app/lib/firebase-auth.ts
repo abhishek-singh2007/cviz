@@ -11,6 +11,7 @@ import {
 import {
     firebaseAuth,
     firebaseConfigError,
+    firebaseRuntimeError,
     googleAuthProvider,
     isFirebaseConfigured,
 } from "~/lib/firebase";
@@ -31,7 +32,7 @@ interface FirebaseAuthStore {
 let authUnsubscribe: (() => void) | null = null;
 
 const configOrAuthError = (fallback: string) =>
-    firebaseConfigError || fallback;
+    firebaseConfigError || firebaseRuntimeError || fallback;
 
 const mapFirebaseError = (error: unknown, fallback: string) => {
     if (error instanceof Error) {
@@ -42,6 +43,9 @@ const mapFirebaseError = (error: unknown, fallback: string) => {
             if (code === "auth/weak-password") return "Password should be at least 6 characters.";
             if (code === "auth/popup-closed-by-user") return "Google sign-in popup was closed.";
             if (code === "auth/network-request-failed") return "Network issue. Check internet and try again.";
+            if (code === "auth/invalid-api-key") {
+                return "Firebase API key invalid hai. Firebase Web API key aur Authorized domains (localhost) check karo.";
+            }
         }
         return error.message;
     }
@@ -52,7 +56,7 @@ export const useFirebaseAuthStore = create<FirebaseAuthStore>((set, get) => ({
     user: null,
     isLoading: true,
     initialized: false,
-    error: firebaseConfigError,
+    error: firebaseConfigError || firebaseRuntimeError,
 
     initAuth: () => {
         if (get().initialized) return;
